@@ -385,8 +385,8 @@ class Creator:
         """
         创建  iPhone Live Photo 内容
 
-        :param video_url: iPhone Live Photo 变化过程视频；传入 `DownloadFunc` 时
-            使用其自带的 `ext_headers` 与多线路逻辑，而不是传入的 `ext_headers`
+        :param video_url: iPhone Live Photo 变化过程视频；
+        传入 `DownloadFunc` 时，优先使用对象的 `ext_headers` 属性，未定义时使用传入的请求头.
         :param image_url: iPhone Live Photo 底图
         :param cache_key: 稳定缓存标识，为空时根据各自 URL 生成
         :param bgm_url: iPhone Live Photo 背景音乐
@@ -418,7 +418,7 @@ class Creator:
                 args=(),
                 kwargs={},
                 url=download_func.url,
-                ext_headers=download_func.ext_headers,
+                ext_headers=getattr(download_func, "ext_headers", ext_headers),
                 use_curl_cffi=use_curl_cffi,
             )
         else:

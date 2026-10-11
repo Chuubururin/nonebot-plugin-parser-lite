@@ -37,7 +37,7 @@ class DouyinVideoDownloader:
     满足 Creator.video 的 DownloadFunc 协议（url / ext_headers / __call__）。
     """
 
-    def __init__(self, url_list: list[str], ext_headers: dict[str, str] | None, cache_key: str, cache_variant: str | None = None):
+    def __init__(self, url_list: list[str], ext_headers: dict[str, str] | None, cache_key: str|None, cache_variant: str | None = None):
         self.url_list = [url for url in url_list if url]
         self.url = self.url_list[0] if self.url_list else ""
         self.ext_headers = ext_headers
