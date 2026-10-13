@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from anyio import Path
 from nonebot.exception import ActionFailed, NetworkError
+from nonebot.matcher import current_bot
 from nonebot_plugin_alconna.uniseg import (
     Audio,
     CustomNode,
@@ -15,10 +16,12 @@ from nonebot_plugin_alconna.uniseg import (
     Video,
     Voice,
 )
+from pydantic import ValidationError
 import pytest
 from render_test_support import Renderer, UniHelper, make_result, pconfig
 
-from nonebot_plugin_parser_lite import delivery, render
+from nonebot_plugin_parser_lite import delivery, matchers, render
+from nonebot_plugin_parser_lite.config import Config
 from nonebot_plugin_parser_lite.delivery import (
     build_text_fallback,
     build_video_fallback,
@@ -38,6 +41,169 @@ class OneBotFailed(ActionFailed):
     def __init__(self, wording):
         super().__init__("test")
         self.info = {"retcode": 1200, "wording": wording}
+
+
+@pytest.fixture
+def onebot_context():
+    token = current_bot.set(
+        SimpleNamespace(adapter=SimpleNamespace(get_name=lambda: "OneBot V11"))
+    )
+    try:
+        yield
+    finally:
+        current_bot.reset(token)
+
+
+@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
+def test_file_upload_timeout_rejects_invalid_values(value):
+    with pytest.raises(ValidationError):
+        Config(plite_file_upload_timeout=value)
+
+
+def test_file_upload_timeout_configuration_is_opt_in():
+    assert Config().file_upload_timeout is None
+    assert Config(plite_file_upload_timeout="900").file_upload_timeout == 900
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upload_timeout", [None, 450.0, 900.0])
+async def test_file_upload_uses_its_configured_timeout(
+    monkeypatch, onebot_context, upload_timeout
+):
+    calls = []
+
+    async def send(message, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(UniMessage, "send", send)
+    monkeypatch.setattr(pconfig, "plite_file_upload_timeout", upload_timeout)
+    # /bm 的纯文件发送不需要构造解析结果，普通和懒下载共用同一边界。
+    await send_with_media_fallback(UniMessage(File(path="audio.mp3")))
+    assert calls == (
+        [{}] if upload_timeout is None else [{"_timeout": upload_timeout}]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("summary_segment", "expected_options"),
+    [
+        (File(path="large-summary.webp"), {"_timeout": 900}),
+        (Image(path="summary.webp"), {}),
+    ],
+)
+async def test_parser_summary_uses_file_timeout_when_rendered_as_file(
+    monkeypatch, onebot_context, summary_segment, expected_options
+):
+    result = make_result()
+    calls = []
+
+    async def parse_result(sr):
+        return result
+
+    async def cached_summary(parsed):
+        return summary_segment
+
+    async def no_content(parsed, summary_node=None):
+        for packet in ():
+            yield packet
+
+    async def send(message, **kwargs):
+        calls.append((message, kwargs))
+
+    monkeypatch.setattr(matchers, "_get_or_parse_result", parse_result)
+    monkeypatch.setattr(matchers.RENDERER, "cache_or_render_image", cached_summary)
+    monkeypatch.setattr(matchers.RENDERER, "send_content", no_content)
+    monkeypatch.setattr(UniMessage, "send", send)
+    monkeypatch.setattr(pconfig, "plite_file_upload_timeout", 900)
+    monkeypatch.setattr(pconfig, "plite_summary_in_forward", False)
+    monkeypatch.setattr(pconfig, "plite_lazy_download", False)
+    monkeypatch.setattr(pconfig, "plite_append_url", False)
+    monkeypatch.setattr(pconfig, "plite_embed_url", False)
+    await matchers.parser_handler.__wrapped__(session=None, sr=None)
+    assert len(calls) == 1
+    assert calls[0][0][0] is summary_segment
+    assert calls[0][1] == expected_options
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "message",
+    [
+        UniMessage.text("text"),
+        UniMessage(Image(raw=b"image")),
+        UniMessage(Video(raw=b"video")),
+        UniMessage(Reference(id="forward")),
+        UniMessage(
+            Reference(nodes=[CustomNode("42", "bot", content=UniMessage(File(path="file.mp4")))])
+        ),
+    ],
+)
+async def test_non_file_apis_keep_the_normal_timeout(
+    monkeypatch, onebot_context, message
+):
+    calls = []
+
+    async def send(message, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(UniMessage, "send", send)
+    monkeypatch.setattr(pconfig, "plite_file_upload_timeout", 900)
+    await send_with_media_fallback(message, make_result())
+    assert calls == [{}]
+
+
+@pytest.mark.asyncio
+async def test_file_timeout_is_passed_without_adapter_specific_dispatch(monkeypatch):
+    calls = []
+
+    async def send(message, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(UniMessage, "send", send)
+    monkeypatch.setattr(pconfig, "plite_file_upload_timeout", 900)
+    token = current_bot.set(
+        SimpleNamespace(adapter=SimpleNamespace(get_name=lambda: "Telegram"))
+    )
+    try:
+        await send_with_media_fallback(UniMessage(File(path="file.mp4")))
+    finally:
+        current_bot.reset(token)
+    assert calls == [{"_timeout": 900}]
+
+
+@pytest.mark.asyncio
+async def test_top_level_file_keeps_timeout_alongside_a_forward_id(monkeypatch):
+    calls = []
+
+    async def send(message, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr(UniMessage, "send", send)
+    monkeypatch.setattr(pconfig, "plite_file_upload_timeout", 900)
+    await send_with_media_fallback(
+        UniMessage([File(path="file.mp4"), Reference(id="forward")])
+    )
+    assert calls == [{"_timeout": 900}]
+
+
+@pytest.mark.asyncio
+async def test_file_timeout_does_not_repeat_an_uncertain_upload(
+    monkeypatch, onebot_context
+):
+    calls = []
+    error = NetworkError("WebSocket call api upload_group_file timeout")
+
+    async def send(message, **kwargs):
+        calls.append(kwargs)
+        raise error
+
+    monkeypatch.setattr(UniMessage, "send", send)
+    monkeypatch.setattr(pconfig, "plite_file_upload_timeout", 900)
+    with pytest.raises(NetworkError) as caught:
+        await send_with_media_fallback(UniMessage(File(path="file.mp4")), make_result())
+    assert caught.value is error
+    assert calls == [{"_timeout": 900}]
 
 
 def forward(*contents):

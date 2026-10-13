@@ -9,6 +9,7 @@ from nonebot import logger
 from nonebot.exception import ActionFailed
 from nonebot_plugin_alconna.uniseg import (
     CustomNode,
+    File,
     Image,
     Reference,
     Segment,
@@ -17,6 +18,7 @@ from nonebot_plugin_alconna.uniseg import (
 )
 from nonebot_plugin_alconna.uniseg.segment import Media
 
+from .config import pconfig
 from .data import ParseResult
 from .helper import media_role
 from .render import (
@@ -210,7 +212,9 @@ def build_video_fallback(message: UniMessage, result: ParseResult) -> list[UniMe
     return _build_fallback(message, result, video_only=True)
 
 
-async def send_with_media_fallback(message: UniMessage, result: ParseResult):
+async def send_with_media_fallback(
+    message: UniMessage, result: ParseResult | None = None
+):
     # exporter 可能修改消息，失败后只能从发送前的快照构造降级内容
     snapshot = (
         deepcopy(message)
@@ -218,9 +222,15 @@ async def send_with_media_fallback(message: UniMessage, result: ParseResult):
         else None
     )
     try:
-        await message.send()
+        upload_timeout = pconfig.file_upload_timeout
+        send_kwargs = (
+            {"_timeout": upload_timeout}
+            if upload_timeout is not None and message.has(File)
+            else {}
+        )
+        await message.send(**send_kwargs)
     except ActionFailed as error:
-        if snapshot is None or not is_media_upload_error(error):
+        if snapshot is None or result is None or not is_media_upload_error(error):
             raise
         logger.exception("合并转发媒体上传失败，开始降级失败分包")
         video_fallback = build_video_fallback(snapshot, result)

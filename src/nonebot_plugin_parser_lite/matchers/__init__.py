@@ -161,7 +161,7 @@ async def parser_handler(
     summary_msg = await RENDERER.render_messages(result)
     summary_in_forward = pconfig.summary_in_forward and not pconfig.lazy_download
     if not summary_in_forward:
-        await summary_msg.send()
+        await send_with_media_fallback(summary_msg, result)
 
     if pconfig.lazy_download:
         if pconfig.lazy_download_tip:
@@ -224,7 +224,9 @@ async def register_bili_matcher():
                 convert_to_mp3=True,
             )
             if pconfig.need_upload_audio:
-                await UniMessage(await UniHelper.file_seg(audio_path)).send()
+                await send_with_media_fallback(
+                    UniMessage(await UniHelper.file_seg(audio_path))
+                )
             else:
                 await UniMessage(await UniHelper.record_seg(audio_path)).send()
 
