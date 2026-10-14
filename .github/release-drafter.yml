@@ -46,26 +46,31 @@ autolabeler:
       - src/nonebot_plugin_parser_lite/render/templates/**/*
 categories:
   - title: 💥 破坏性变更
+    exclusive: true
     when:
       labels:
         - breaking-change
   - title: 🚀 新功能
+    exclusive: true
     when:
       - labels:
           - enhancement
       - conventional:
           type: feat
   - title: 🐛 Bug 修复
+    exclusive: true
     when:
       - labels:
           - bug
       - conventional:
           type: fix
   - title: 📝 文档更新
+    exclusive: true
     when:
       labels:
         - documentation
   - title: 👻 自动化程序
+    exclusive: true
     when:
       - labels:
           - chore
@@ -76,6 +81,7 @@ categories:
       - paths:
           - ".github/**"
   - title: 🚦 测试
+    exclusive: true
     when:
       - labels:
           - test
@@ -87,11 +93,13 @@ categories:
       - paths:
           - "tests/**"
   - title: 📦 依赖更新
+    exclusive: true
     when:
       labels:
         - dependencies
     collapse-after: 15
   - title: 💫 杂项
+    exclusive: true
 change-template: "- $TITLE @$AUTHOR (#$NUMBER)"
 change-title-escapes: '\<*_&' # You can add # and @ to disable mentions, and add ` to disable code blocks.
 version-resolver:
