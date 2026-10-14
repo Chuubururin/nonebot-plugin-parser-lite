@@ -16,7 +16,6 @@ from nonebot_plugin_alconna.uniseg import (
     Video,
     Voice,
 )
-from pydantic import ValidationError
 import pytest
 from render_test_support import Renderer, UniHelper, make_result, pconfig
 
