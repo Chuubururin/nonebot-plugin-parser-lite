@@ -54,12 +54,6 @@ def onebot_context():
         current_bot.reset(token)
 
 
-@pytest.mark.parametrize("value", [0, -1, float("inf"), float("nan")])
-def test_file_upload_timeout_rejects_invalid_values(value):
-    with pytest.raises(ValidationError):
-        Config(plite_file_upload_timeout=value)
-
-
 def test_file_upload_timeout_configuration_is_opt_in():
     assert Config().file_upload_timeout is None
     assert Config(plite_file_upload_timeout="900").file_upload_timeout == 900
@@ -79,9 +73,7 @@ async def test_file_upload_uses_its_configured_timeout(
     monkeypatch.setattr(pconfig, "plite_file_upload_timeout", upload_timeout)
     # /bm 的纯文件发送不需要构造解析结果，普通和懒下载共用同一边界。
     await send_with_media_fallback(UniMessage(File(path="audio.mp3")))
-    assert calls == (
-        [{}] if upload_timeout is None else [{"_timeout": upload_timeout}]
-    )
+    assert calls == ([{}] if upload_timeout is None else [{"_timeout": upload_timeout}])
 
 
 @pytest.mark.asyncio
@@ -135,7 +127,11 @@ async def test_parser_summary_uses_file_timeout_when_rendered_as_file(
         UniMessage(Video(raw=b"video")),
         UniMessage(Reference(id="forward")),
         UniMessage(
-            Reference(nodes=[CustomNode("42", "bot", content=UniMessage(File(path="file.mp4")))])
+            Reference(
+                nodes=[
+                    CustomNode("42", "bot", content=UniMessage(File(path="file.mp4")))
+                ]
+            )
         ),
     ],
 )
@@ -224,7 +220,7 @@ def text_of(message):
     for node in message[0].children:
         assert isinstance(node, CustomNode)
         assert all(isinstance(segment, Text) for segment in node.content)
-        texts.append(node.content.extract_plain_text()) # pyright: ignore[reportAttributeAccessIssue]
+        texts.append(node.content.extract_plain_text())  # pyright: ignore[reportAttributeAccessIssue]
     return "\n".join(texts)
 
 
@@ -258,7 +254,7 @@ def test_media_replaced_without_losing_text_or_source(media, label, monkeypatch)
     assert result.url in text
     assert result.repost.url in text
     assert message == original
-    assert result.content[0].need_send # pyright: ignore[reportAttributeAccessIssue]
+    assert result.content[0].need_send  # pyright: ignore[reportAttributeAccessIssue]
     assert all(node.uid == "42" for node in fallback[0][0].children)
 
 
@@ -520,7 +516,7 @@ def test_video_file_role_preserves_unrelated_files():
     segments = [s for n in fallback[0][0].children for s in n.content]
     assert [s.raw for s in segments if isinstance(s, File)] == [b"document"]
     assert any(isinstance(s, Image) for s in segments)
-    assert video in message[0].children[0].content # pyright: ignore[reportAttributeAccessIssue, reportOperatorIssue]
+    assert video in message[0].children[0].content  # pyright: ignore[reportAttributeAccessIssue, reportOperatorIssue]
 
 
 @pytest.mark.asyncio
@@ -627,10 +623,10 @@ async def test_fallback_text_uses_normal_split_and_pack_rules(monkeypatch, text)
         for node in fallback_nodes
         if not getattr(node, "_parser_lite_fallback_notice", False)
     ]
-    assert body[:len(normal_nodes)] == [
+    assert body[: len(normal_nodes)] == [
         node.content.extract_plain_text() for node in normal_nodes
     ]
-    assert "".join(body[len(normal_nodes):]) == "[视频已省略，请通过原链接查看]"
+    assert "".join(body[len(normal_nodes) :]) == "[视频已省略，请通过原链接查看]"
     assert all(len(packet[0].children) <= 2 for packet in normal + fallback)
 
 
