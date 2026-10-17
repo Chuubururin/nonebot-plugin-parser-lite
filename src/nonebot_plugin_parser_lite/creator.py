@@ -34,7 +34,9 @@ T = TypeVar("T", bound=MediaContent)
 class DownloadFunc(Protocol):
     """自定义下载函数协议：必须暴露 URL，ext_headers 属性可省略"""
 
-    url: str
+    @property
+    def url(self) -> str:
+        raise NotImplementedError
 
     def __call__(self) -> Coroutine[Any, Any, Path]:
         raise NotImplementedError
