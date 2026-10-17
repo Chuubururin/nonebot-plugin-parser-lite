@@ -109,10 +109,10 @@ class Creator:
         :param url_or_task: 视频 URL 或下载任务
         :param cover_url: 封面 URL
         :param duration: 视频时长
-        :param cache_key: 稳定缓存标识，为空时根据各自 URL 生成
         :param need_send: 是否发送
         :param ext_headers: 额外请求头
         :param use_curl_cffi: 是否使用 curl_cffi 下载视频/封面
+        :param cache_key: 稳定缓存标识，为空时根据各自 URL 生成
         """
         cover_task = None
         if cover_url:
