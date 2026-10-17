@@ -274,19 +274,17 @@ plite_render_format="webp"
 
 # [可选] 媒体倍速规则，格式 `平台:作者id:倍速`
 # 示例 plite_media_speedup_rules=["bilibili:123456:1.25"] 表示该 UP 主的音视频以 1.25 倍速发送
-# 命中后会在发送前重新编码，需要 ffmpeg；卡片上的时长与倍速标签按产物显示
 plite_media_speedup_rules=[]
 
 # [可选] 媒体倍速并发操作数
 plite_media_transcode_concurrency=1
 
 # [可选] 哔哩哔哩空降服务地址, wiki: https://github.com/hanydd/BilibiliSponsorBlock/wiki/API
-# 留空表示不启用，不会外发任何请求；上游官方服务是 https://www.bsbsb.top
+# 留空表示不启用
 plite_bsb_api_base=""
 
 # [可选] 参与裁切的片段分类，配置了空降服务地址时必填
-# 可选 sponsor、selfpromo、exclusive_access、interaction、poi_highlight、intro、outro、preview、padding、filler、music_offtopic
-# 填写未知分类会在启动时报错；是否真的裁掉还取决于服务返回的 actionType（skip 删除区间，mute 只消音）
+# 可选分类参考服务器提供者提供的分类列表
 plite_bsb_categories=[]
 ```
 
