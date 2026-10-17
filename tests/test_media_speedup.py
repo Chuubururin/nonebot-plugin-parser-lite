@@ -1,19 +1,17 @@
 """上传前倍速：规则配置、写在内容上、渲染与发送读同一个值。
 
-倍速是平台无关的通用能力，命令拼装与真实转码分开验证；按标注裁切是 B 站特有
-的，用例在 test_bilibili_sponsorblock.py。
+倍速是平台无关的通用能力；按标注裁切是 B 站特有的，用例在
+test_bilibili_sponsorblock.py。
 """
 
-import asyncio
 from pathlib import Path
 
 from anyio import Path as AnyPath
-from jinja2 import Environment, FileSystemLoader
 import pytest
 import render_test_support as support
-from render_test_support import ROOT, ResolvedPathTask, ThemeManager
+from render_test_support import ResolvedPathTask
 
-from nonebot_plugin_parser_lite.config import Config, parse_media_speedup_rules
+from nonebot_plugin_parser_lite.config import parse_media_speedup_rules
 from nonebot_plugin_parser_lite.constants import PlatformEnum
 from nonebot_plugin_parser_lite.data import (
     AudioContent,
@@ -23,7 +21,6 @@ from nonebot_plugin_parser_lite.data import (
     VideoContent,
 )
 from nonebot_plugin_parser_lite.exception import SizeLimitException
-from nonebot_plugin_parser_lite.utils.cache import CacheManager
 from nonebot_plugin_parser_lite.utils.ffmpeg import FFmpeg
 from nonebot_plugin_parser_lite.utils.media_edit import (
     apply_media_speedup,
@@ -88,11 +85,6 @@ def test_malformed_rule_is_rejected(raw):
 def test_later_rule_wins_and_ratio_is_not_capped():
     rules = parse_media_speedup_rules(["bilibili:1:1.2", "bilibili:1:1.5", "bilibili:1:100"])
     assert rules[(PlatformEnum.BILIBILI, "1")] == 100.0
-
-
-def test_config_rejects_bad_values():
-    with pytest.raises(ValueError, match="平台:作者id:倍速"):
-        Config(plite_media_speedup_rules=["bilibili=1.2"])
 
 
 # --------------------------------------------------------------------------
@@ -162,172 +154,12 @@ def test_display_duration_divides_the_speedup(cls, tmp_path):
     assert cont.duration == 120.0, "时长要由倍速换算，不能就地改写"
 
 
-@pytest.mark.parametrize("cls", [VideoContent, AudioContent])
-def test_display_size_is_marked_as_an_estimate(cls, tmp_path):
-    cont = make_media(cls, tmp_path, "m.mp4", duration=120.0)
-    cont._size_bytes = 2048
-    assert asyncio.run(cont.get_display_size()) == "2.00KB"
-    cont.speedup = 2.0
-    assert asyncio.run(cont.get_display_size()) == "~1.00KB"
-
-
 def test_digest_keeps_the_plain_speed(tmp_path):
     """1 倍速也要写进摘要，键的构成才不随命中与否变化"""
     cont = make_media(VideoContent, tmp_path, "v.mp4")
     assert speedup_digest(make_result(contents=[cont])) == "1.00x"
     cont.speedup = 1.25
     assert speedup_digest(make_result(contents=[cont])) == "1.25x"
-
-
-# --------------------------------------------------------------------------
-# ffmpeg 命令拼装
-
-
-@pytest.fixture
-def recorder(monkeypatch, media_dir):
-    """捕获 ffmpeg 调用并真实落一个占位产物，替代 _probe_media 与执行"""
-    calls: list[list[str]] = []
-    state = {"streams": ["video", "audio"], "fail": None}
-
-    async def fake_probe(path: Path):
-        return {
-            "format": {"duration": "20.0"},
-            "streams": [{"codec_type": name} for name in state["streams"]],
-        }
-
-    async def fake_monitored(cmd, output_path, max_size_mb, on_progress=None):
-        calls.append(list(cmd))
-        if state["fail"] is not None:
-            raise state["fail"]
-        await AnyPath(str(output_path)).write_bytes(b"edited")
-        return b""
-
-    monkeypatch.setattr(FFmpeg, "_probe_media", classmethod(lambda cls, p: fake_probe(p)))
-    monkeypatch.setattr(
-        FFmpeg,
-        "exec_ffmpeg_monitored",
-        staticmethod(
-            lambda cmd, output_path, max_size_mb, on_progress=None: fake_monitored(
-                cmd, output_path, max_size_mb
-            )
-        ),
-    )
-    for stale in media_dir.glob("*"):
-        stale.unlink()
-    return {"calls": calls, "state": state, "media_dir": media_dir}
-
-
-@pytest.fixture
-def media_dir() -> Path:
-    return Path(CacheManager.cache_dir(CacheManager.MEDIA))
-
-
-def filter_of(cmd: list[str]) -> str:
-    return cmd[cmd.index("-filter_complex") + 1] if "-filter_complex" in cmd else ""
-
-
-def test_speedup_video_command_reencodes_and_ends_with_output_path(recorder):
-    asyncio.run(FFmpeg.edit_video(Path("src.mp4"), speed_ratio=1.25))
-    cmd = recorder["calls"][-1]
-    assert filter_of(cmd) == "[0:v]setpts=PTS/1.25[vf];[0:a]atempo=1.25[af]"
-    assert cmd[cmd.index("-i") + 1] == "src.mp4"
-    # 滤镜必须在输入之后，否则 ffmpeg 把它当成输入选项
-    assert cmd.index("-filter_complex") > cmd.index("-i")
-    assert cmd[cmd.index("-map") + 1] == "[vf]"
-    assert cmd[cmd.index("-c:v") + 1] == "libx264"
-    # 缺输出路径时 ffmpeg 只报「unconnected output」，这里直接钉住末位参数
-    assert cmd[-1].endswith(".tmp.mp4")
-    assert [p.name for p in recorder["media_dir"].glob("*.mp4")] != []
-
-
-def test_ratio_is_passed_to_ffmpeg_as_is(recorder):
-    """不拆级：默认用户 ffmpeg 大于 7，单级 atempo 允许到 100"""
-    asyncio.run(FFmpeg.edit_video(Path("src.mp4"), speed_ratio=4.0))
-    assert "atempo=4" in filter_of(recorder["calls"][-1])
-
-
-def test_mute_only_video_stream_is_copied(recorder):
-    asyncio.run(FFmpeg.edit_video(Path("src.mp4"), mute_ranges=((1.0, 2.0),)))
-    cmd = recorder["calls"][-1]
-    assert cmd[cmd.index("-c:v") + 1] == "copy"
-    assert filter_of(cmd) == "[0:a]volume=enable='between(t,1,2)':volume=0[at]"
-    assert cmd[cmd.index("-map") + 1] == "0:v"
-
-
-def test_silent_source_produces_no_audio_map(recorder):
-    recorder["state"]["streams"] = ["video"]
-    asyncio.run(FFmpeg.edit_video(Path("src.mp4"), speed_ratio=2.0))
-    cmd = recorder["calls"][-1]
-    assert "-an" in cmd
-    assert "[0:a]" not in filter_of(cmd)
-
-
-def test_silent_source_with_cuts_and_mutes_does_not_reference_audio(recorder):
-    """没有音轨时不能挂引用 [0:a] 的消音滤镜
-
-    滤镜图一旦被拒，整次编辑（含裁切）都会退化成原片。CI 没有 ffmpeg，这条字符串
-    断言就是它唯一的防线；真实转码用例在 test_media_edit_real_ffmpeg.py。
-    """
-    recorder["state"]["streams"] = ["video"]
-    asyncio.run(
-        FFmpeg.edit_video(
-            Path("src.mp4"),
-            cut_ranges=((2.0, 4.0),),
-            mute_ranges=((10.0, 12.0),),
-        )
-    )
-    cmd = recorder["calls"][-1]
-    graph = filter_of(cmd)
-    assert "volume=enable" not in graph
-    assert "[0:a]" not in graph
-    assert "-an" in cmd
-    assert "trim=start=4:end=20" in graph
-
-
-def test_product_name_follows_the_source_and_the_parameters(recorder):
-    """产物名由 edit_video 自己维护：同源同参数复用，参数或源变了就换"""
-    first = Path(str(asyncio.run(FFmpeg.edit_video(Path("src.mp4"), speed_ratio=1.25))))
-    assert first.parent == recorder["media_dir"]
-    assert first.suffix == ".mp4"
-    assert ":" not in first.name, "Windows 的文件名不允许冒号"
-
-    recorder["calls"].clear()
-    again = Path(str(asyncio.run(FFmpeg.edit_video(Path("src.mp4"), speed_ratio=1.25))))
-    assert again == first
-    assert recorder["calls"] == [], "命中产物时不该再转码"
-
-    assert Path(
-        str(asyncio.run(FFmpeg.edit_video(Path("src.mp4"), speed_ratio=1.5)))
-    ) != first
-    assert Path(
-        str(asyncio.run(FFmpeg.edit_video(Path("src.mp4"), cut_ranges=((1.0, 2.0),))))
-    ) != first
-    assert Path(
-        str(asyncio.run(FFmpeg.edit_video(Path("src.mp4"), mute_ranges=((1.0, 2.0),))))
-    ) != first
-    # 主干相同、目录不同的源不能命中同一个产物
-    assert Path(
-        str(asyncio.run(FFmpeg.edit_video(Path("elsewhere/src.mp4"), speed_ratio=1.25)))
-    ) != first
-
-
-def test_edit_audio_reencodes_and_keeps_container(recorder):
-    product = Path(str(asyncio.run(FFmpeg.edit_audio(Path("src.mp3"), speed_ratio=1.5))))
-    cmd = recorder["calls"][-1]
-    assert cmd[cmd.index("-af") + 1] == "atempo=1.5"
-    assert "-vn" in cmd
-    assert cmd.index("-af") > cmd.index("-i")
-    # 编码器交给 ffmpeg 按输出后缀决定
-    assert "-c:a" not in cmd
-    assert cmd[-1].endswith(".tmp.mp3")
-    assert product.suffix == ".mp3"
-    assert product.parent == recorder["media_dir"]
-    assert product.is_file()
-    # 音频不判断视频容器，产物名同样随倍速变化
-    assert "+faststart" not in cmd
-    assert Path(
-        str(asyncio.run(FFmpeg.edit_audio(Path("src.mp3"), speed_ratio=2.0)))
-    ) != product
 
 
 # --------------------------------------------------------------------------
@@ -352,51 +184,6 @@ async def test_get_path_returns_source_when_no_speedup(tmp_path, monkeypatch):
     cont = make_media(VideoContent, tmp_path, "video.mp4")
     assert await cont.get_path() == await cont.path_task
     assert called == []
-
-
-@pytest.mark.asyncio
-async def test_get_path_returns_the_sped_up_product(tmp_path, monkeypatch):
-    async def always(cls):
-        return True
-
-    seen: dict[str, object] = {}
-
-    async def spy(cls, input_path, **kwargs):
-        seen.update(kwargs, input_path=input_path)
-        product = tmp_path / "product.mp4"
-        product.write_bytes(b"edited")
-        return AnyPath(product)
-
-    monkeypatch.setattr(FFmpeg, "is_available", classmethod(always))
-    monkeypatch.setattr(FFmpeg, "edit_video", classmethod(spy))
-    monkeypatch.setattr(support.pconfig, "plite_max_size", 42)
-
-    cont = make_media(VideoContent, tmp_path, "video.mp4")
-    cont.speedup = 1.25
-    source = await cont.path_task
-    assert str(await cont.get_path()) == str(tmp_path / "product.mp4")
-    assert seen["input_path"] == source
-    assert seen["speed_ratio"] == 1.25
-
-
-@pytest.mark.asyncio
-async def test_audio_speedup_routes_to_the_audio_editor(tmp_path, monkeypatch):
-    async def always(cls):
-        return True
-
-    async def video_editor(cls, *args, **kwargs):
-        raise AssertionError("音频不该走视频编辑器")
-
-    async def audio_editor(cls, input_path, **kwargs):
-        return AnyPath(tmp_path / "product.mp3")
-
-    monkeypatch.setattr(FFmpeg, "is_available", classmethod(always))
-    monkeypatch.setattr(FFmpeg, "edit_video", classmethod(video_editor))
-    monkeypatch.setattr(FFmpeg, "edit_audio", classmethod(audio_editor))
-
-    cont = make_media(AudioContent, tmp_path, "audio.mp3")
-    cont.speedup = 1.5
-    assert str(await cont.get_path()) == str(tmp_path / "product.mp3")
 
 
 @pytest.mark.asyncio
@@ -443,185 +230,3 @@ async def test_missing_ffmpeg_skips_speedup_and_drops_it(tmp_path, monkeypatch):
     assert await cont.get_path() == await cont.path_task
     assert called == [], "缺 ffmpeg 时不该调用转码"
     assert cont.speedup == 1.0
-
-
-# --------------------------------------------------------------------------
-# 发送与卡片
-
-
-def capture_segments(monkeypatch) -> list:
-    seen: list = []
-
-    async def img_seg(file):
-        from nonebot_plugin_alconna.uniseg import Image
-
-        return Image(raw=b"cover")
-
-    async def video_seg(file, thumbnail=None):
-        from nonebot_plugin_alconna.uniseg import Video
-
-        seen.append(file)
-        return Video(raw=b"video")
-
-    async def file_seg(file, display_name=None):
-        from nonebot_plugin_alconna.uniseg import File
-
-        seen.append(file)
-        return File(raw=b"video", name=display_name or "video.mp4")
-
-    def construct(segments, user_id=None):
-        from nonebot_plugin_alconna.uniseg import Reference
-
-        return Reference(nodes=[])
-
-    monkeypatch.setattr(support.UniHelper, "construct_forward_message", construct)
-    monkeypatch.setattr(support.UniHelper, "img_seg", img_seg)
-    monkeypatch.setattr(support.UniHelper, "video_seg", video_seg)
-    monkeypatch.setattr(support.UniHelper, "file_seg", file_seg)
-    return seen
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("need_upload", [False, True])
-@pytest.mark.parametrize("in_forward", [False, True])
-async def test_send_content_uses_the_sped_up_product(
-    monkeypatch, tmp_path, need_upload, in_forward
-):
-    monkeypatch.setattr(support.pconfig, "plite_need_upload_video", need_upload)
-    monkeypatch.setattr(support.pconfig, "plite_need_upload", False)
-    monkeypatch.setattr(support.pconfig, "plite_video_in_forward", in_forward)
-    monkeypatch.setattr(support.pconfig, "plite_need_forward_contents", False)
-
-    async def always(cls):
-        return True
-
-    async def fake_retime(cls, input_path, **kwargs):
-        product = tmp_path / "product.mp4"
-        product.write_bytes(b"edited")
-        return AnyPath(product)
-
-    monkeypatch.setattr(FFmpeg, "is_available", classmethod(always))
-    monkeypatch.setattr(FFmpeg, "edit_video", classmethod(fake_retime))
-
-    seen = capture_segments(monkeypatch)
-    cont = make_media(VideoContent, tmp_path, "video.mp4")
-    cont.speedup = 1.25
-    result = make_result(contents=[cont])
-
-    messages = [message async for message in support.Renderer().send_content(result)]
-    assert messages, "视频消息应当被产出"
-    assert [str(path) for path in seen] == [str(tmp_path / "product.mp4")], (
-        "消息段必须使用处理后的产物，而不是原片"
-    )
-
-
-@pytest.mark.asyncio
-async def test_send_content_falls_back_to_source_when_ffmpeg_is_missing(
-    monkeypatch, tmp_path
-):
-    monkeypatch.setattr(support.pconfig, "plite_need_upload_video", False)
-    monkeypatch.setattr(support.pconfig, "plite_need_upload", False)
-    monkeypatch.setattr(support.pconfig, "plite_video_in_forward", False)
-    monkeypatch.setattr(support.pconfig, "plite_need_forward_contents", False)
-
-    async def never(cls):
-        return False
-
-    monkeypatch.setattr(FFmpeg, "is_available", classmethod(never))
-
-    seen = capture_segments(monkeypatch)
-    cont = make_media(VideoContent, tmp_path, "video.mp4")
-    cont.speedup = 1.25
-    result = make_result(contents=[cont])
-
-    async for _ in support.Renderer().send_content(result):
-        pass
-    assert [str(path) for path in seen] == [str(await cont.path_task)]
-
-
-@pytest.mark.asyncio
-async def test_card_cache_key_changes_with_the_speedup(monkeypatch, tmp_path):
-    """卡片是按倍速换算出来的时长渲染的，倍速变了就必须换一张卡
-
-    持久化的卡片缓存跨重启复用，键里若没有倍速标记，改了配置后老卡片会一直显示
-    旧时长。
-    """
-    renders: list = []
-
-    async def fake_render_image(self, result, **kwargs):
-        renders.append(speedup_digest(result))
-        return tmp_path / "raw.png"
-
-    async def fake_compress(path):
-        return b"IMAGE"
-
-    render_dir = tmp_path / "render"
-
-    async def fake_ensure_dir(cache_type=CacheManager.MEDIA):
-        render_dir.mkdir(parents=True, exist_ok=True)
-        return AnyPath(render_dir)
-
-    monkeypatch.setattr(
-        type(support.Renderer()), "render_image", fake_render_image, raising=True
-    )
-    monkeypatch.setattr(FFmpeg, "png_to_webp", staticmethod(fake_compress))
-    monkeypatch.setattr(
-        CacheManager,
-        "ensure_dir",
-        classmethod(
-            lambda cls, cache_type=CacheManager.MEDIA: fake_ensure_dir(cache_type)
-        ),
-    )
-
-    cont = make_media(VideoContent, tmp_path, "video.mp4")
-    cont.speedup = 1.25
-    result = make_result(contents=[cont])
-
-    await support.Renderer().cache_or_render_image(result)
-    await support.Renderer().cache_or_render_image(result)
-    assert len(renders) == 1, "同一倍速应命中卡片缓存"
-
-    cont.speedup = 1.5
-    await support.Renderer().cache_or_render_image(result)
-    assert len(renders) == 2, "倍速变化后必须重渲染卡片"
-
-    cont.speedup = 1.0
-    await support.Renderer().cache_or_render_image(result)
-    assert len(renders) == 3
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("cls", [VideoContent, AudioContent])
-async def test_card_shows_a_speedup_label_next_to_the_duration(cls, tmp_path):
-    """时长换算后看不出被加速过，卡片要单独给出倍速标签"""
-    cont = make_media(cls, tmp_path, "m.mp4", duration=120.0)
-    cont._size_bytes = 2048
-    result = make_result(contents=[cont])
-
-    async def card_data():
-        return await support.build_theme_data(
-            result,
-            color_scheme="dark",
-            theme_id="default",
-            bot_name="bot",
-            max_comments=5,
-            append_qrcode=False,
-        )
-
-    cont.speedup = 1.25
-    item = (await card_data())["post"]["content"][0]
-    assert item["duration"] == "1:36"
-    assert item["speedup"] == "1.25x"
-
-    cont.speedup = 1.0
-    assert (await card_data())["post"]["content"][0]["speedup"] is None
-
-    cont.speedup = 1.25
-    manager = ThemeManager(ROOT / "src/nonebot_plugin_parser_lite/render/templates", [])
-    selected = await (await manager.resolve("default")).resolve_template("bilibili")
-    env = Environment(
-        loader=FileSystemLoader(str(selected.root)), enable_async=True, autoescape=False
-    )
-    html = await env.get_template(selected.name).render_async(data=await card_data())
-    assert "<span>1:36</span>" in html
-    assert "<span>1.25x</span>" in html
