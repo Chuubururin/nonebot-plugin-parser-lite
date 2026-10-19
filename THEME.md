@@ -251,7 +251,6 @@ data.post; // [object] 动态/帖子核心数据
   "type": "image",
   "src": "file:///path/to/img.png",
   "layout": "grid", // 布局建议："grid" (网格) | "x" (横向推特流)
-  "is_live": false,
   "source_url": "http://..." // 原始网络地址（不建议模板直接请求）
 }
 ```
@@ -260,6 +259,7 @@ data.post; // [object] 动态/帖子核心数据
 {
   "type": "cover",
   "src": "file:///path/to/img.png",
+  "layout": "grid", // "grid" | "x"，封面不需要处理布局建议
   "alt": "...",
   "source_url": "https://.."
 }
@@ -274,11 +274,12 @@ data.post; // [object] 动态/帖子核心数据
   "type": "live_photo",
   "src": "...",
   "layout": "grid",
-  "is_live": true
+  "is_live": true,
+  "source_url": "https://.."
 }
 ```
 
-- 可根据 `is_live == true` 在 UI 上叠加“实况/Live”角标。
+- 可根据 `item.is_live == true` 在 UI 上叠加“实况/Live”角标。
 
 ### 4. 独立图文卡片 (`graphic`)
 
@@ -299,8 +300,9 @@ data.post; // [object] 动态/帖子核心数据
 {
   "type": "sticker",
   "src": "...",
-  "size": "small",
-  "description": "笑哭"
+  "size": "small", // 表情尺寸，small / medium
+  "description": "笑哭", // 贴纸描述
+  "source_url": "..."
 }
 ```
 
@@ -313,15 +315,19 @@ data.post; // [object] 动态/帖子核心数据
 {
   "type": "video",
   "src": "封面URI",
-  "duration": "01:23",
-  "size": "12.34MB"
+  "duration": "01:23", // 视频时长
+  "speedup": "1.25x", // 视频倍速，1倍速时为 null
+  "size": "12.34MB", // 视频大小
+  "source_url": "..."
 }
 
 // audio
 {
   "type": "audio",
   "duration": "03:45",
-  "size": "7.63GB"
+  "speedup": "1.25x",
+  "size": "7.63GB",
+  "source_url": "..."
 }
 ```
 
@@ -331,19 +337,21 @@ data.post; // [object] 动态/帖子核心数据
 // link
 {
   "type": "link",
-  "url": "...",
-  "title": "...",
-  "site_name": "...",
-  "icon": "...",
-  "preview": "..."
+  "url": "string", // 链接地址
+  "title": "string", // 链接标题
+  "site_name": "string / null", // 来源站点名称
+  "description": "string / null", // 链接摘要
+  "icon": "uri / null", // 链接站点 icon
+  "preview": "uri / null" // 链接预览图片
 }
 
 // quote
 {
   "type": "quote",
   "text": "引用内容",
-  "title": "出处",
-  "url": "..."
+  "title": "string / null", // 引用来源标题
+  "url": "string / null", // 引用来源链接
+  "icon": "uri / null" // 引用来源图标或头像
 }
 ```
 
@@ -352,17 +360,23 @@ data.post; // [object] 动态/帖子核心数据
 ```json
 {
   "type": "poll",
-  "title": "投票标题",
+  "title": "string / null", // 投票标题
   "options": [
     {
-      "text": "选项 A",
-      "votes": 10,
-      "percentage": 62.5,
-      "image": "..."
+      "text": "选项 A", // 选项文本
+      "votes": 10, // 选项票数
+      "percentage": 62.5, // float
+      "image": "uri / null" // 选项图片
     },
     ...
   ],
-  "has_images": false
+  "option_vote_total": 123, // 选项票数之和
+  "total_votes": 123 / null, // 平台返回的总票数，多选时可能大于投票人数
+  "total_voters": 123 / null, // 投票人数
+  "multiple": false, // 是否允许多选
+  "closed": false, // 投票是否已结束
+  "close_at": "2026-xx-...", // 投票结束时间，由平台保留原始表示
+  "has_images": false // 是否有选项图片
 }
 ```
 
@@ -392,7 +406,7 @@ data.post; // [object] 动态/帖子核心数据
 > 渲染管道在向 Jinja2 传入数据前已统一完成安全转义，同时自动转义功能在 Jinja 环境中已关闭。
 >
 > - **正确**：`{{ post.title }}`
-> - **错误**：{`{ post.title | e }}`（会导致字符被双重转义，如显示为 `&amp;lt;`）
+> - **错误**：`{{ post.title | e }}`（会导致字符被双重转义，如显示为 `&amp;lt;`）
 
 ### 2. HTML 与容器结构要求
 

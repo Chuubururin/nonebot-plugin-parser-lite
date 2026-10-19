@@ -241,7 +241,6 @@ async def _serialize_content(
             "type": "cover" if is_cover else "image",
             "src": await safe_src(item),
             "layout": item.layout,
-            "is_live": False,
             "source_url": _task_url(item),
         }
         if is_cover:
@@ -264,7 +263,6 @@ async def _serialize_content(
         }
         if is_cover:
             content["layout"] = "grid"
-            content["is_live"] = False
         return content
     if isinstance(item, StickerContent):
         return {
