@@ -103,9 +103,14 @@ async def fetch_segments(
         return []
 
     if response.status_code != 200:
+        # 取 content 而不是 text：服务端声明的编码与正文不符时 text 会抛 UnicodeError
+        excerpt = "".join(
+            ch
+            for ch in response.content[:200].decode("utf-8", "replace")
+            if ch.isprintable()
+        )
         logger.warning(
-            f"SponsorBlock 返回 HTTP {response.status_code}，忽略片段: "
-            f"{response.text[:200]}"
+            f"SponsorBlock 返回 HTTP {response.status_code}，忽略片段: {excerpt}"
         )
         return []
     try:

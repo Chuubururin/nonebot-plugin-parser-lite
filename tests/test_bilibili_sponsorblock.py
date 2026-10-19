@@ -25,11 +25,17 @@ def row(start, end, category="sponsor", action="skip", recorded=600.0):
 
 
 class _Response:
-    def __init__(self, status_code=200, payload=None, raw="not json", text=""):
+    def __init__(self, status_code=200, payload=None, raw="not json", content=b""):
         self.status_code = status_code
         self._payload = payload
         self._raw = raw
-        self.text = text
+        self.content = content
+
+    @property
+    def text(self) -> str:
+        # 真实 httpx 在「正文与声明编码不符」时会抛 UnicodeError（实测 charset=utf-16
+        # 配上非 BOM 正文），替身保留这个行为，谁读 .text 谁就在用例里炸出来
+        raise UnicodeError("UTF-16 stream does not start with BOM")
 
     def json(self):
         if self._payload is None:
@@ -158,30 +164,65 @@ async def test_categories_go_out_as_one_encoded_json_array(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_server_rejection_reason_reaches_the_log(monkeypatch):
-    """400 的原因只在响应体里，丢掉它就分不清配置写错还是服务不可达"""
+    """400 的原因只在响应体里，丢掉它就分不清配置写错还是服务不可达
+
+    替身的 .text 一律抛 UnicodeError，所以这条同时钉住「诊断信息取自 content」。
+    """
     log = _Log()
     client = _Client(
-        _Response(400, payload=None, text='["Unknown category provided."]'),
+        _Response(400, payload=None, content=b'["Unknown category provided."]'),
     )
     monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
     monkeypatch.setattr(sponsorblock, "logger", log)
 
     assert await fetch_segments("https://bsbsb.top", "BV1", "9", ["foobar"]) == []
     assert any("Unknown category provided." in msg for msg in log.warnings)
-    assert log.debugs == []
 
 
 @pytest.mark.asyncio
-async def test_absent_annotation_is_not_a_warning(monkeypatch):
-    """官方服务端对无标注视频回 404，这是常态，不该刷 warning"""
+async def test_any_non_200_is_reported_including_404(monkeypatch):
+    """地址或路径写错同样是 404，必须告警，否则空降静默失效而运维什么都看不到"""
     log = _Log()
-    client = _Client(_Response(404, payload=None, text=""))
+    body = b"<html><head><title>404 Not Found</title></head></html>"
+    client = _Client(_Response(404, payload=None, content=body))
+    monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
+    monkeypatch.setattr(sponsorblock, "logger", log)
+
+    assert (
+        await fetch_segments("https://wrong.example/sb", "BV1", "9", ["sponsor"]) == []
+    )
+    assert log.debugs == []
+    assert any("HTTP 404" in msg and "404 Not Found" in msg for msg in log.warnings)
+
+
+@pytest.mark.asyncio
+async def test_error_body_cannot_forge_log_lines(monkeypatch):
+    """响应体来自远端，换行与控制字符会伪造出别的日志行"""
+    log = _Log()
+    body = b'["bad"]\n[CRITICAL] forged line\x1b[31m'
+    client = _Client(_Response(400, payload=None, content=body))
     monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
     monkeypatch.setattr(sponsorblock, "logger", log)
 
     assert await fetch_segments("https://bsbsb.top", "BV1", "9", ["sponsor"]) == []
-    assert log.warnings == []
-    assert any("BV1" in msg for msg in log.debugs)
+    assert len(log.warnings) == 1
+    message = log.warnings[0]
+    assert "\n" not in message
+    assert "\x1b" not in message
+    assert "forged line" in message, "诊断内容要留下，只去掉控制字符"
+
+
+@pytest.mark.asyncio
+async def test_undecodable_error_body_does_not_abort_parsing(monkeypatch):
+    """正文与声明编码不符时取 text 会抛 UnicodeError，不能让它逃出本函数"""
+    log = _Log()
+    client = _Client(_Response(400, payload=None, content=b"\xff\xfe\x80garbage"))
+    monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
+    monkeypatch.setattr(sponsorblock, "logger", log)
+
+    assert await fetch_segments("https://bsbsb.top", "BV1", "9", ["sponsor"]) == []
+    assert len(log.warnings) == 1
+    assert "garbage" in log.warnings[0]
 
 
 # --------------------------------------------------------------------------
