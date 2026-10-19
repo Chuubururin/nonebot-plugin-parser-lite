@@ -3,6 +3,7 @@
 这块是平台特有能力，只被 bilibili 解析器调用；通用倍速在 test_media_speedup.py。
 """
 
+import httpx
 import pytest
 import render_test_support as support
 
@@ -24,15 +25,30 @@ def row(start, end, category="sponsor", action="skip", recorded=600.0):
 
 
 class _Response:
-    def __init__(self, status_code=200, payload=None, raw="not json"):
+    def __init__(self, status_code=200, payload=None, raw="not json", text=""):
         self.status_code = status_code
         self._payload = payload
         self._raw = raw
+        self.text = text
 
     def json(self):
         if self._payload is None:
             raise ValueError(self._raw)
         return self._payload
+
+
+class _Log:
+    """收 nonebot logger 的调用，日志分级也是被测行为"""
+
+    def __init__(self):
+        self.warnings: list[str] = []
+        self.debugs: list[str] = []
+
+    def warning(self, message, *args, **kwargs):
+        self.warnings.append(str(message))
+
+    def debug(self, message, *args, **kwargs):
+        self.debugs.append(str(message))
 
 
 class _Client:
@@ -108,6 +124,64 @@ async def test_fetch_swallows_transport_errors(monkeypatch):
     client = _Client(_Response(), error=OSError("connection reset"))
     monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
     assert await fetch_segments("https://bsbsb.top", "BV1", "9", ["sponsor"]) == []
+
+
+@pytest.mark.asyncio
+async def test_categories_go_out_as_one_encoded_json_array(monkeypatch):
+    """复数键 categories 必须是 URL 编码的 JSON 数组
+
+    httpx 会把 list 编成 `categories=sponsor&categories=intro`，服务端对它无条件
+    JSON.parse，实测 bsbsb.top 回 400
+    `["categories parameter does not match format requirements."]`，于是空降永远
+    不生效。断言只能落在真正出网的 Request.url 上——params 字典看不出这两种编码的差别。
+    """
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=[row(1.0, 5.0, "intro")])
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
+    try:
+        segments = await fetch_segments(
+            "https://bsbsb.top", "BV1", "9", ["sponsor", "intro"]
+        )
+    finally:
+        await client.aclose()
+
+    query = seen[0].url.query.decode()
+    assert query.count("categories=") == 1, "重复参数形态会被服务端整条拒绝"
+    assert "categories=%5B%22sponsor%22%2C%22intro%22%5D" in query
+    assert [seg.category for seg in segments] == ["intro"]
+
+
+@pytest.mark.asyncio
+async def test_server_rejection_reason_reaches_the_log(monkeypatch):
+    """400 的原因只在响应体里，丢掉它就分不清配置写错还是服务不可达"""
+    log = _Log()
+    client = _Client(
+        _Response(400, payload=None, text='["Unknown category provided."]'),
+    )
+    monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
+    monkeypatch.setattr(sponsorblock, "logger", log)
+
+    assert await fetch_segments("https://bsbsb.top", "BV1", "9", ["foobar"]) == []
+    assert any("Unknown category provided." in msg for msg in log.warnings)
+    assert log.debugs == []
+
+
+@pytest.mark.asyncio
+async def test_absent_annotation_is_not_a_warning(monkeypatch):
+    """官方服务端对无标注视频回 404，这是常态，不该刷 warning"""
+    log = _Log()
+    client = _Client(_Response(404, payload=None, text=""))
+    monkeypatch.setattr(sponsorblock.DOWNLOADER, "client", client)
+    monkeypatch.setattr(sponsorblock, "logger", log)
+
+    assert await fetch_segments("https://bsbsb.top", "BV1", "9", ["sponsor"]) == []
+    assert log.warnings == []
+    assert any("BV1" in msg for msg in log.debugs)
 
 
 # --------------------------------------------------------------------------
