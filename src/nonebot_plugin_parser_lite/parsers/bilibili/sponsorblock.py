@@ -86,8 +86,6 @@ async def fetch_segments(
     categories: list[str],
 ) -> list[SponsorSegment]:
     """查询这条视频标记的片段"""
-    # 复数键 categories 必须是 URL 编码的 JSON 数组：服务端对它无条件 JSON.parse，
-    # 而 httpx 把 list 编成 categories=a&categories=b，解析必失败并让整条请求 400
     params = {
         "videoID": bvid,
         "cid": cid,
@@ -104,13 +102,7 @@ async def fetch_segments(
         logger.warning(f"SponsorBlock 查询失败 {bvid}: {type(e).__name__}: {e!r}")
         return []
 
-    if response.status_code == 404:
-        # 官方服务端对无标注视频回 404，部署实例回 200 + 空数组，两种都是「没有标注」
-        logger.debug(f"SponsorBlock 没有 {bvid} 的空降标注")
-        return []
     if response.status_code != 200:
-        # 服务端把具体原因放在响应体里（某个分类名不合法会让整条请求作废），
-        # 只报状态码就分不清是配置写错还是服务不可达
         logger.warning(
             f"SponsorBlock 返回 HTTP {response.status_code}，忽略片段: "
             f"{response.text[:200]}"
